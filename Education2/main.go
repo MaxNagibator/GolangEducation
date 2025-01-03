@@ -4,11 +4,51 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
-
-	"math/rand"
+	"math/rand/v2"
 
 	_ "github.com/lib/pq"
 )
+
+type sqlProvider struct {
+	connectionString string
+	state            bool
+	db               *sql.DB
+}
+
+func (provider sqlProvider) QueryInt(query string, args ...any) int64 {
+	provider.OpenConnection()
+	sqlRow := provider.db.QueryRow(query, args)
+	var val int64
+	sqlRow.Scan(&val)
+	return val
+}
+
+func (provider sqlProvider) ExecuteNonQuery(query string, args ...any) int64 {
+	provider.OpenConnection()
+	result, err := provider.db.Exec(query, args...)
+	if err != nil {
+		fmt.Println("Error execute: %v\n", err)
+		return -1
+	}
+	r, _ := result.RowsAffected()
+	return r
+}
+
+func (provider sqlProvider) ExecuteQuery(query string, args ...any) (*sql.Rows, error) {
+	provider.OpenConnection()
+	return provider.db.Query(query, args...)
+}
+
+func (provider *sqlProvider) OpenConnection() {
+	if provider.state == false {
+		db, err := sql.Open("postgres", provider.connectionString)
+		if err != nil {
+			fmt.Println("Unable to connect to database: %v\n", err)
+			return
+		}
+		provider.db = db
+	}
+}
 
 func main() {
 	const (
@@ -18,42 +58,29 @@ func main() {
 		password = "RjirfLeyz"
 		dbname   = "money-dev2"
 	)
-	psqlInfo := fmt.Sprintf("host=%s port=%d user=%s "+
+
+	databaseConnectionString := fmt.Sprintf("host=%s port=%d user=%s "+
 		"password=%s dbname=%s sslmode=disable",
 		host, port, user, password, dbname)
 
-	db, err := sql.Open("postgres", psqlInfo)
-	if err != nil {
-		fmt.Println("Unable to connect to database: %v\n", err)
-		return
+	var dbProvider = sqlProvider{
+		connectionString: databaseConnectionString,
+		state:            false,
 	}
 
-	nextOperationIdRow := db.QueryRow("SELECT next_operation_id FROM public.domain_users WHERE id = 3")
-	var nextOperatonId int
-	nextOperationIdRow.Scan(&nextOperatonId)
+	dbProvider.ExecuteNonQuery("DELETE FROM public.operations WHERE user_id = $1", 3)
+
+	nextOperatonId := dbProvider.QueryInt("SELECT next_operation_id FROM public.domain_users WHERE id = 3")
 	nextOperatonId++
 
 	insertedSum := toFixed(rand.Float64()*1000, 2)
 	insertedComment := "test"
-	db.Exec("DELETE FROM public.operations WHERE user_id = 3")
-	result, err := db.Exec("INSERT INTO public.operations (user_id, id, sum, comment, category_id, date, is_deleted) VALUES ($1, $2, $3, $4, $5, NOW(), false)", 3, nextOperatonId, insertedSum, insertedComment, 1)
-	if err != nil {
-		fmt.Println("Error execute: %v\n", err)
-		return
-	}
-	rows22, _ := result.RowsAffected()
-	if rows22 > 0 {
-		fmt.Println("success", rows22)
-		result, err := db.Exec("UPDATE public.domain_users SET next_operation_id = $1 WHERE id = 3", nextOperatonId)
-		if err != nil {
-			fmt.Println("Error execute: %v\n", err)
-			return
-		}
-		rows22, _ := result.RowsAffected()
-		fmt.Println("success2 ", rows22)
-	}
+	insertedCount := dbProvider.ExecuteNonQuery("INSERT INTO public.operations (user_id, id, sum, comment, category_id, date, is_deleted) VALUES ($1, $2, $3, $4, $5, NOW(), false)", 3, nextOperatonId, insertedSum, insertedComment, 1)
+	fmt.Println("inserted ", insertedCount)
+	updatedCount := dbProvider.ExecuteNonQuery("UPDATE public.domain_users SET next_operation_id = $1 WHERE id = 3", nextOperatonId)
+	fmt.Println("updated ", updatedCount)
 
-	rows, err := db.Query("SELECT id, sum, comment FROM public.operations WHERE user_Id = 3")
+	rows, err := dbProvider.ExecuteQuery("SELECT id, sum, comment FROM public.operations WHERE user_Id = 3")
 	if err != nil {
 		fmt.Println("Error execute: %v\n", err)
 		return
