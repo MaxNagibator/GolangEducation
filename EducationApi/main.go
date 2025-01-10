@@ -6,20 +6,43 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 
 	_ "github.com/lib/pq"
 )
 
 func main() {
 
-	// Create a new request multiplexer
-	// Take incoming requests and dispatch them to the matching handlers
-	mux := http.NewServeMux()
+	const (
+		host     = "localhost"
+		port     = 5432
+		user     = "postgres"
+		password = "RjirfLeyz"
+		dbname   = "go-crud"
+	)
 
+	databaseConnectionString := fmt.Sprintf("host=%s port=%d user=%s "+
+		"password=%s dbname=%s sslmode=disable",
+		host, port, user, password, dbname)
+
+	var dbProvider = sqlProvider{
+		connectionString: databaseConnectionString,
+		state:            false,
+	}
+
+	var debtService = debtService{
+		sqlProvider: dbProvider,
+	}
+
+	debtsHandler := DebtsHandler{
+		debtService: debtService,
+	}
+
+	mux := http.NewServeMux()
 	// Register the routes and handlers
 	mux.Handle("/", &homeHandler{})
-	mux.Handle("/debts", &DebtsHandler{})
-	mux.Handle("/debts/", &DebtsHandler{})
+	mux.Handle("/debts", &debtsHandler)
+	mux.Handle("/debts/", &debtsHandler)
 
 	// Run the server
 	http.ListenAndServe(":4545", mux)
@@ -33,7 +56,7 @@ func (h *homeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 var (
 	DebtRe       = regexp.MustCompile(`^/debts/*$`)
-	DebtReWithID = regexp.MustCompile(`^/debts/([a-z0-9]+(?:-[a-z0-9]+)+)$`)
+	DebtReWithID = regexp.MustCompile(`^/debts/[0-9]+$`)
 )
 
 type debtService struct {
@@ -45,11 +68,44 @@ func (ds *debtService) Add(debt Debt) error {
 	return err
 }
 
+func (ds *debtService) Delete(debtId int) error {
+	_, err := ds.sqlProvider.ExecuteQuery("DELETE FROM public.debts WHERE id = $1", debtId)
+	return err
+}
+func (ds *debtService) GetAll() ([]Debt, error) {
+
+	rows, err := ds.sqlProvider.ExecuteQuery("SELECT id, name, status FROM public.debts")
+	if err != nil {
+		fmt.Println("Error execute: %v\n", err)
+		return nil, err
+	}
+	rowIndex := 0
+	debts := []Debt{}
+	for rows.Next() {
+		rowIndex++
+		var id int
+		var name string
+		var status int
+		rows.Scan(&id, &name, &status)
+		debt := Debt{
+			Id:     id,
+			Name:   name,
+			Status: status,
+		}
+		debts = append(debts, debt)
+	}
+
+	return debts, err
+}
+
 type DebtsHandler struct {
 	debtService debtService
 }
 
 func (h *DebtsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("piu pau", r.Method, r.URL.Path)
+	asd := DebtReWithID.MatchString(r.URL.Path)
+	fmt.Println(asd)
 	switch {
 	case r.Method == http.MethodPost && DebtRe.MatchString(r.URL.Path):
 		h.CreateDebt(w, r)
@@ -74,29 +130,50 @@ func (h *DebtsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *DebtsHandler) CreateDebt(w http.ResponseWriter, r *http.Request) {
 	var debt Debt
 	if err := json.NewDecoder(r.Body).Decode(&debt); err != nil {
+		fmt.Println(err)
 		InternalServerErrorHandler(w, r)
 		return
 	}
 	//resourceID := slug.Make(recipe.Name)
 	if err := h.debtService.Add(debt); err != nil {
+		fmt.Println(err)
 		InternalServerErrorHandler(w, r)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
 }
-func (h *DebtsHandler) ListDebts(w http.ResponseWriter, r *http.Request)  {}
+func (h *DebtsHandler) ListDebts(w http.ResponseWriter, r *http.Request) {
+	debtList, err := h.debtService.GetAll()
+
+	jsonBytes, err := json.Marshal(debtList)
+	if err != nil {
+		InternalServerErrorHandler(w, r)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(jsonBytes)
+
+}
 func (h *DebtsHandler) GetDebt(w http.ResponseWriter, r *http.Request)    {}
 func (h *DebtsHandler) UpdateDebt(w http.ResponseWriter, r *http.Request) {}
-func (h *DebtsHandler) DeleteDebt(w http.ResponseWriter, r *http.Request) {}
+func (h *DebtsHandler) DeleteDebt(w http.ResponseWriter, r *http.Request) {
 
-//CREATE TABLE IF NOT EXISTS public.debts
-//(
-//    id integer NOT NULL,
-//    comment character varying(4000) COLLATE pg_catalog."default" NOT NULL,
-//    status integer NOT NULL,
-//    CONSTRAINT pk_debts PRIMARY KEY (id)
-//)
+	idString := r.URL.Path[len("/debts/"):len(r.URL.Path)]
+	id, err := strconv.Atoi(idString)
+	if err != nil {
+		InternalServerErrorHandler(w, r)
+		return
+	}
+
+	if err := h.debtService.Delete(id); err != nil {
+		InternalServerErrorHandler(w, r)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
 
 func InternalServerErrorHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusInternalServerError)
